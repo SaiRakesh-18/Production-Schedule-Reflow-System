@@ -76,9 +76,9 @@ rakesh_technical_test/
 │   │   └── date-utils.ts                 # Shift/maintenance time helpers
 │   │
 │   └── data/
-│       ├── scenario-1-delay-cascade.ts   # 3-step chain, delay ripple
-│       ├── scenario-2-maintenance.ts     # Maintenance block + shift wrap
-│       └── scenario-3-complex.ts         # Diamond deps + breakdown
+│       ├── scenario-1-delay-cascade.ts   # 5-step chain, delay ripple + independent order
+│       ├── scenario-2-maintenance.ts     # Maintenance block + shift wrap + dependency push
+│       └── scenario-3-complex.ts         # Diamond deps + breakdown + finishing chain
 │
 ├── package.json
 ├── tsconfig.json
@@ -220,14 +220,18 @@ If any violation is found the engine throws with a detailed list of all violatio
 
 ### Scenario 1 — Delay Cascade
 
-**Story:** A factory produces plastic pipes in 3 steps: Extrude → Cool → Package. The extrusion machine starts late (10AM instead of 8AM). The delay ripples through the chain.
+**Story:** A factory produces plastic pipes in 5 steps: Extrude → Cool → Inspect → Cut → Label, each on its own work center. The extrusion machine starts late (10AM instead of 8AM). The delay ripples through all downstream steps. An independent spare-parts batch (WO-006) runs on the same extrusion line but is unaffected.
 
 ```
-Dependency chain:   WO-001 → WO-002 → WO-003
+Dependency chain:   WO-001 → WO-002 → WO-003 → WO-004 → WO-005
+Independent:        WO-006 (no deps)
 
-BEFORE:  WO-001: 08:00-10:00   WO-002: 10:00-11:30   WO-003: 11:30-12:30
-AFTER:   WO-001: 10:00-12:00   WO-002: 12:00-13:30   WO-003: 13:30-14:30
+BEFORE:  WO-001: 08:00-10:00  WO-002: 10:00-11:30  WO-003: 11:30-12:30  WO-004: 12:30-13:15  WO-005: 13:15-13:45
+AFTER:   WO-001: 10:00-12:00  WO-002: 12:00-13:30  WO-003: 13:30-14:30  WO-004: 14:30-15:15  WO-005: 15:15-15:45
+         WO-006: 14:00-15:00  (unchanged)
 ```
+
+**Metrics:** 4 orders affected, 480 total delay minutes, 2 unchanged (WO-001 came in already delayed; WO-006 independent).
 
 **Key mechanism:** Each order reads its parent's resolved end time from `resolvedMap` and starts no earlier than that.
 
@@ -235,35 +239,47 @@ AFTER:   WO-001: 10:00-12:00   WO-002: 12:00-13:30   WO-003: 13:30-14:30
 
 ### Scenario 2 — Maintenance Conflict + Shift Boundary
 
-**Story:** Two jobs are on the same machine. A locked maintenance block occupies 11AM–2PM. A job originally at 10AM needs to move. A later job spans the end of shift and wraps into the next day.
+**Story:** Three work centers are active. Extrusion Line 1 (wc-001) has a planned maintenance window Mon 11AM–2PM. A job originally at 10AM must move past it. A downstream job wraps across the shift boundary into Tuesday. A further dependent order on the Cooling Station is pushed by the shift-wrap. Two independent jobs on separate machines are unaffected.
 
 ```
-wc-001 timeline (Monday):
-  [WO-004: 08:00-10:00]  [MAINTENANCE: 11:00-14:00]  [WO-005: 14:00-16:00]  [WO-006: 16:00→]
-Tuesday:
+wc-001 (Extrusion Line 1) — Monday:
+  [WO-004: 08:00-10:00]  [WO-007-MAINT: 11:00-14:00 LOCKED]  [WO-005: 14:00-16:00]  [WO-006: 16:00→]
+wc-001 — Tuesday:
   [→WO-006: 08:00-09:00]
+
+wc-002 (Cooling Station):
+  [WO-010: Mon 10:00-11:00]  [WO-008: Tue 09:00-10:30]  ← WO-008 waits for WO-006
+
+wc-003 (Quality Lab, shift 09:00-18:00):
+  [WO-009: Mon 09:00-10:00]
 ```
+
+**Orders:** WO-004 unchanged (gap-fit before maintenance) · WO-005 delayed +240 min · WO-006 shift-wrap corrected · WO-007-MAINT locked · WO-008 delayed +60 min · WO-009 & WO-010 unchanged (independent)
 
 **Key mechanism:** `findEarliestFit` allows WO-004 to fit in the 08:00–11:00 gap *before* the maintenance block instead of being pushed past it.
 
 ---
 
-### Scenario 3 — Diamond Dependencies + Breakdown
+### Scenario 3 — Diamond Dependencies + Breakdown + Finishing Chain
 
-**Story:** Two production lines (Line 1 and Line 2) produce components that are *both* needed for final assembly. Line 1 has an unplanned breakdown 1PM–3PM. Line 2 runs a long overnight job. Assembly must wait for the *last* of the two to finish.
+**Story:** Two production lines produce components *both* needed for final assembly (diamond pattern). After assembly, the product flows through a Finishing Line and a Quality Control check before dispatch. Line 1 has an unplanned breakdown 1PM–3PM. Line 2 runs a long overnight job and is the bottleneck. Quality Control has its own maintenance Tue 09:00–10:00. An independent spare-parts finishing run (WO-015) is unaffected.
 
 ```
 Dependency graph:
   WO-008 (Line 1) ──→ WO-010 ──→ WO-011 ─┐
-                                           ├──→ WO-012 (Assembly)
+                                           ├──→ WO-012 (Assembly) ──→ WO-013 (Finishing) ──→ WO-014 (QC)
   WO-009 (Line 2, overnight) ─────────────┘
 
-Line 1 Mon: [WO-008: 08-11][WO-010: 11-13][BREAKDOWN: 13-15][WO-011: 15-16:30]
-Line 2:     [WO-009: Mon 06:00 → Tue 07:00]
-Assembly:                                                      [WO-012: Tue 08:00-10:00]
+  WO-015 (Finishing) — independent spare run
+
+Line 1 Mon:  [WO-008: 08-11][WO-010: 11-13][BREAKDOWN: 13-15][WO-011: 15-16:30]
+Line 2:      [WO-009: Mon 06:00 → Tue 07:00]
+Assembly:                                        [WO-012: Tue 08:00-10:00]
+Finishing:   [WO-015: Mon 08-09]                 [WO-013: Tue 10:00-11:00]
+QC:          [MAINTENANCE: Tue 09-10]            [WO-014: Tue 11:00-11:45]
 ```
 
-**Key mechanism:** The parent loop pushes WO-012's start to `max(WO-011 end, WO-009 end)`. WO-009 (Line 2) is the bottleneck — it ends Tue 07:00 which is later than WO-011's Mon 16:30.
+**Key mechanism:** The parent loop pushes WO-012's start to `max(WO-011 end, WO-009 end)`. WO-009 (Line 2) is the bottleneck — it ends Tue 07:00 which is later than WO-011's Mon 16:30. The entire downstream chain (WO-013, WO-014) cascades from there.
 
 ---
 
@@ -333,12 +349,12 @@ npm run build
   ...
 
   📋 Summary
-  Reflow complete. 2 work order(s) were rescheduled...
+  Reflow complete. 4 work order(s) were rescheduled...
 
   📊 Metrics
-  Total delay introduced : 240 minutes
-  Orders affected        : 2
-  Orders unchanged       : 1
+  Total delay introduced : 480 minutes
+  Orders affected        : 4
+  Orders unchanged       : 2
 
   🔄 Changes
   📦 WO-002  [⏩ DELAYED by 2h 0m]
