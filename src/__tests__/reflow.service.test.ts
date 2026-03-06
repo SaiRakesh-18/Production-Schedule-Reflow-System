@@ -379,12 +379,16 @@ describe("reflow — Scenario 1 (Delay Cascade)", () => {
     result = new ReflowService().reflow(scenario1);
   });
 
-  it("produces exactly 2 changes (WO-002 and WO-003 move, WO-001 does not)", () => {
-    expect(result.changes).toHaveLength(2);
+  it("produces exactly 4 changes (WO-002, WO-003, WO-004, WO-005 cascade from WO-001 delay)", () => {
+    expect(result.changes).toHaveLength(4);
   });
 
   it("WO-001 is not in changes — it came in already delayed, reflow did not move it", () => {
     expect(result.changes.find((c) => c.workOrderNumber === "WO-001")).toBeUndefined();
+  });
+
+  it("WO-006 is not in changes — independent order, unaffected by cascade", () => {
+    expect(result.changes.find((c) => c.workOrderNumber === "WO-006")).toBeUndefined();
   });
 
   it("WO-002 is rescheduled to start at Mon 12:00 (after WO-001 ends)", () => {
@@ -401,10 +405,24 @@ describe("reflow — Scenario 1 (Delay Cascade)", () => {
     expect(change?.delayMinutes).toBe(120);
   });
 
-  it("metrics: totalDelayMinutes=240, affected=2, unchanged=1", () => {
-    expect(result.metrics?.totalDelayMinutes).toBe(240);
-    expect(result.metrics?.affectedOrderCount).toBe(2);
-    expect(result.metrics?.unchangedOrderCount).toBe(1);
+  it("WO-004 is rescheduled to start at Mon 14:30 (after WO-003 ends)", () => {
+    const change = result.changes.find((c) => c.workOrderNumber === "WO-004");
+    expect(change?.newStartDate).toBe("2025-01-06T14:30:00.000Z");
+    expect(change?.newEndDate).toBe("2025-01-06T15:15:00.000Z");
+    expect(change?.delayMinutes).toBe(120);
+  });
+
+  it("WO-005 is rescheduled to start at Mon 15:15 (after WO-004 ends)", () => {
+    const change = result.changes.find((c) => c.workOrderNumber === "WO-005");
+    expect(change?.newStartDate).toBe("2025-01-06T15:15:00.000Z");
+    expect(change?.newEndDate).toBe("2025-01-06T15:45:00.000Z");
+    expect(change?.delayMinutes).toBe(120);
+  });
+
+  it("metrics: totalDelayMinutes=480, affected=4, unchanged=2", () => {
+    expect(result.metrics?.totalDelayMinutes).toBe(480);
+    expect(result.metrics?.affectedOrderCount).toBe(4);
+    expect(result.metrics?.unchangedOrderCount).toBe(2);
   });
 });
 
@@ -415,6 +433,10 @@ describe("reflow — Scenario 2 (Maintenance + Gap Fitting)", () => {
 
   beforeAll(() => {
     result = new ReflowService().reflow(scenario2);
+  });
+
+  it("produces exactly 2 changes (WO-005 maintenance push + WO-008 dependency push)", () => {
+    expect(result.changes).toHaveLength(2);
   });
 
   it("WO-004 fits in the gap before maintenance and stays at Mon 08:00 (not pushed to 14:00)", () => {
@@ -455,6 +477,27 @@ describe("reflow — Scenario 2 (Maintenance + Gap Fitting)", () => {
     );
     expect(wo006?.data.endDate).toBe("2025-01-07T09:00:00.000Z");
   });
+
+  it("WO-008 is pushed to Tue 09:00 because WO-006 ends Tue 09:00 (delay +60 min)", () => {
+    const change = result.changes.find((c) => c.workOrderNumber === "WO-008");
+    expect(change?.newStartDate).toBe("2025-01-07T09:00:00.000Z");
+    expect(change?.newEndDate).toBe("2025-01-07T10:30:00.000Z");
+    expect(change?.delayMinutes).toBe(60);
+  });
+
+  it("WO-009 is not in changes — independent order on Quality Lab, no conflicts", () => {
+    expect(result.changes.find((c) => c.workOrderNumber === "WO-009")).toBeUndefined();
+  });
+
+  it("WO-010 is not in changes — independent order on Cooling Station, no conflicts", () => {
+    expect(result.changes.find((c) => c.workOrderNumber === "WO-010")).toBeUndefined();
+  });
+
+  it("metrics: totalDelayMinutes=300, affected=2, unchanged=5", () => {
+    expect(result.metrics?.totalDelayMinutes).toBe(300);
+    expect(result.metrics?.affectedOrderCount).toBe(2);
+    expect(result.metrics?.unchangedOrderCount).toBe(5);
+  });
 });
 
 // ─── reflow — Scenario 3: Diamond Dependencies + Breakdown ───────────────────
@@ -466,12 +509,12 @@ describe("reflow — Scenario 3 (Diamond + Breakdown)", () => {
     result = new ReflowService().reflow(scenario3);
   });
 
-  it("produces exactly 2 changes (WO-011 and WO-012)", () => {
-    expect(result.changes).toHaveLength(2);
+  it("produces exactly 4 changes (WO-011, WO-012, WO-013, WO-014)", () => {
+    expect(result.changes).toHaveLength(4);
   });
 
-  it("WO-008, WO-009, WO-010 are NOT in changes", () => {
-    const unchanged = ["WO-008", "WO-009", "WO-010"];
+  it("WO-008, WO-009, WO-010, WO-015 are NOT in changes", () => {
+    const unchanged = ["WO-008", "WO-009", "WO-010", "WO-015"];
     unchanged.forEach((num) => {
       expect(result.changes.find((c) => c.workOrderNumber === num)).toBeUndefined();
     });
@@ -504,9 +547,27 @@ describe("reflow — Scenario 3 (Diamond + Breakdown)", () => {
     expect(change?.reason).toContain("WO-009");
   });
 
-  it("metrics: totalDelayMinutes=1170, affected=2, unchanged=3", () => {
-    expect(result.metrics?.totalDelayMinutes).toBe(1170);
-    expect(result.metrics?.affectedOrderCount).toBe(2);
-    expect(result.metrics?.unchangedOrderCount).toBe(3);
+  it("WO-013 is pushed to Tue 10:00 (depends on WO-012 which ends Tue 10:00)", () => {
+    const change = result.changes.find((c) => c.workOrderNumber === "WO-013");
+    expect(change?.newStartDate).toBe("2025-01-07T10:00:00.000Z");
+    expect(change?.newEndDate).toBe("2025-01-07T11:00:00.000Z");
+    expect(change?.delayMinutes).toBe(1050);
+  });
+
+  it("WO-014 is pushed to Tue 11:00 (depends on WO-013; past wc-qc maintenance at 09:00-10:00)", () => {
+    const change = result.changes.find((c) => c.workOrderNumber === "WO-014");
+    expect(change?.newStartDate).toBe("2025-01-07T11:00:00.000Z");
+    expect(change?.newEndDate).toBe("2025-01-07T11:45:00.000Z");
+    expect(change?.delayMinutes).toBe(180);
+  });
+
+  it("WO-015 is not in changes — independent finishing run, no conflicts", () => {
+    expect(result.changes.find((c) => c.workOrderNumber === "WO-015")).toBeUndefined();
+  });
+
+  it("metrics: totalDelayMinutes=2400, affected=4, unchanged=4", () => {
+    expect(result.metrics?.totalDelayMinutes).toBe(2400);
+    expect(result.metrics?.affectedOrderCount).toBe(4);
+    expect(result.metrics?.unchangedOrderCount).toBe(4);
   });
 });
